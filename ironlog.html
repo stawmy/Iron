@@ -95,11 +95,18 @@ label{display:block;font-size:12px;color:var(--text2);margin-bottom:6px;font-wei
 /* ACTIVE WORKOUT */
 .workout-header{text-align:center;padding:16px 0;margin-bottom:16px}
 .workout-timer{font-family:var(--mono);font-size:36px;font-weight:500;color:var(--gold);letter-spacing:0.05em}
-.rest-overlay{position:fixed;inset:0;z-index:200;background:rgba(14,14,13,0.95);
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
-  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
-.rest-timer{font-family:var(--mono);font-size:72px;font-weight:500;color:var(--gold)}
-.rest-label{font-size:14px;color:var(--text2);text-transform:uppercase;letter-spacing:0.1em}
+.rest-overlay{position:fixed;top:0;left:0;right:0;z-index:200;
+  background:rgba(14,14,13,0.97);border-bottom:2px solid var(--gold);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  padding:12px 16px;display:flex;align-items:center;gap:14px}
+.rest-timer{font-family:var(--mono);font-size:32px;font-weight:500;color:var(--gold);min-width:80px}
+.rest-label{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.08em}
+.rest-bar{flex:1;height:6px;background:var(--surface2);border-radius:3px;overflow:hidden}
+.rest-bar-fill{height:100%;background:var(--gold);border-radius:3px;transition:width 1s linear}
+.rest-skip-btn{background:none;border:1px solid var(--border);border-radius:6px;
+  color:var(--text2);font-family:var(--font);font-size:12px;font-weight:600;
+  padding:8px 14px;cursor:pointer;white-space:nowrap;transition:all 0.15s}
+.rest-skip-btn:active{background:rgba(255,255,255,0.06)}
 
 /* PLATE DISPLAY */
 .plate-bar{display:flex;align-items:center;justify-content:center;gap:2px;padding:12px 0;flex-wrap:nowrap;overflow-x:auto}
@@ -675,6 +682,30 @@ function generateSuggestions() {
 // ============================================================
 // ACTIVE WORKOUT SCREEN
 // ============================================================
+
+// Get the best total volume ever recorded for an exercise (across all session types)
+function getBestVolumeForExercise(exId, dayIdx) {
+  let best = 0;
+  state.logs
+    .filter(l => l.dayIndex === dayIdx)
+    .forEach(log => {
+      const exData = log.exercises.find(e => e.id === exId);
+      if (!exData) return;
+      const vol = exData.sets
+        .filter(s => s.completed)
+        .reduce((v, s) => v + (s.reps * s.weight), 0);
+      if (vol > best) best = vol;
+    });
+  return best;
+}
+
+// Get current live volume for an exercise from active sets
+function getLiveVolumeForExercise(exId) {
+  return state.activeSets
+    .filter(s => s.exerciseId === exId && s.completed)
+    .reduce((v, s) => v + (s.reps * s.weight), 0);
+}
+
 function renderActiveWorkout() {
   if (!state.activeWorkout) return renderHome();
 
@@ -689,7 +720,8 @@ function renderActiveWorkout() {
   const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
   const secs = String(elapsed % 60).padStart(2, '0');
 
-  let html = `<div class="screen">
+  const restActive = state.restTimer !== null;
+  let html = `<div class="screen" style="${restActive ? 'padding-top:85px' : ''}">
     <div class="workout-header">
       <p class="subtitle">${day.name} &middot; ${day.subtitle}</p>
       <div class="workout-timer">${mins}:${secs}</div>
@@ -729,6 +761,40 @@ function renderActiveWorkout() {
 
     if (plates && isCurrent) {
       html += `<div id="plate-diagram-${exIdx}" style="margin-bottom:8px">${renderPlateHTML(plates, plateWeight)}</div>`;
+    }
+
+    // Volume progress bar vs personal best
+    const liveVol = getLiveVolumeForExercise(ex.id);
+    const bestVol = getBestVolumeForExercise(ex.id, state.activeDay);
+    // Calculate projected volume (completed + remaining at current weight/reps)
+    let projectedVol = liveVol;
+    for (let si = setGlobalIdx; si < setGlobalIdx + numSets; si++) {
+      const sd = state.activeSets[si];
+      if (sd && !sd.completed && !sd.skipped) {
+        projectedVol += sd.reps * sd.weight;
+      }
+    }
+    if (bestVol > 0) {
+      const volPct = Math.min(Math.round((liveVol / bestVol) * 100), 150);
+      const projPct = Math.min(Math.round((projectedVol / bestVol) * 100), 150);
+      const isNewPR = liveVol > bestVol;
+      const volDisplay = liveVol >= 1000 ? (liveVol/1000).toFixed(1) + 't' : liveVol + 'kg';
+      const bestDisplay = bestVol >= 1000 ? (bestVol/1000).toFixed(1) + 't' : bestVol + 'kg';
+      html += `<div style="margin-bottom:10px;padding:8px 0">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span style="font-size:11px;color:var(--text3)">Volume: <span style="color:${isNewPR ? 'var(--green)' : 'var(--text2)'}; font-family:var(--mono);font-weight:600">${volDisplay}</span></span>
+          <span style="font-size:11px;color:var(--text3)">Best: <span style="font-family:var(--mono)">${bestDisplay}</span>${isNewPR ? ' <span class="badge badge-green">PR!</span>' : ''}</span>
+        </div>
+        <div style="position:relative;height:8px;background:var(--surface2);border-radius:4px;overflow:visible">
+          <div style="position:absolute;height:100%;width:${Math.min(projPct, 100)}%;background:rgba(212,168,83,0.2);border-radius:4px"></div>
+          <div style="position:absolute;height:100%;width:${Math.min(volPct, 100)}%;background:${isNewPR ? 'var(--green)' : 'var(--gold)'};border-radius:4px;transition:width 0.3s ease"></div>
+          ${bestVol > 0 ? `<div style="position:absolute;right:0;top:-3px;bottom:-3px;width:2px;background:var(--text3);border-radius:1px" title="Personal best"></div>` : ''}
+        </div>
+      </div>`;
+    } else if (isCurrent) {
+      // No history yet, just show live volume
+      const volDisplay = liveVol >= 1000 ? (liveVol/1000).toFixed(1) + 't' : liveVol + 'kg';
+      html += `<div style="margin-bottom:10px;font-size:11px;color:var(--text3)">Volume: <span style="font-family:var(--mono);color:var(--text2)">${volDisplay}</span> (no previous data)</div>`;
     }
 
     for (let s = 0; s < numSets; s++) {
@@ -785,10 +851,14 @@ function renderRestOverlay() {
   const remaining = state.restDuration - state.restSeconds;
   const m = String(Math.floor(remaining / 60)).padStart(2, '0');
   const s = String(remaining % 60).padStart(2, '0');
+  const pct = Math.round((state.restSeconds / state.restDuration) * 100);
   return `<div class="rest-overlay">
-    <div class="rest-label">Rest Timer</div>
-    <div class="rest-timer">${m}:${s}</div>
-    <button class="btn btn-primary" style="width:auto;padding:12px 40px" data-action="skipRest">Skip</button>
+    <div>
+      <div class="rest-label">Rest</div>
+      <div class="rest-timer">${m}:${s}</div>
+    </div>
+    <div class="rest-bar"><div class="rest-bar-fill" style="width:${pct}%"></div></div>
+    <button class="rest-skip-btn" data-action="skipRest">Skip</button>
   </div>`;
 }
 
@@ -1482,6 +1552,12 @@ function startRestTimer(durationSecs) {
       const m = String(Math.floor(remaining / 60)).padStart(2, '0');
       const s = String(remaining % 60).padStart(2, '0');
       el.textContent = `${m}:${s}`;
+      // Update progress bar
+      const barFill = document.querySelector('.rest-bar-fill');
+      if (barFill) {
+        const pct = Math.round((state.restSeconds / state.restDuration) * 100);
+        barFill.style.width = pct + '%';
+      }
     }
   }, 1000);
   render();
