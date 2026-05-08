@@ -445,6 +445,12 @@ let state = {
 // ============================================================
 function render() {
   const app = document.getElementById('app');
+
+  // Save scroll position before re-render
+  const screenEl = app.querySelector('.screen');
+  const savedScroll = screenEl ? screenEl.scrollTop : 0;
+  const savedScreen = state.screen;
+
   let html = '';
 
   switch(state.screen) {
@@ -460,6 +466,12 @@ function render() {
 
   app.innerHTML = html;
   attachEvents();
+
+  // Restore scroll position if we're on the same screen
+  if (savedScreen === state.screen) {
+    const newScreenEl = app.querySelector('.screen');
+    if (newScreenEl) newScreenEl.scrollTop = savedScroll;
+  }
 }
 
 function renderNav() {
@@ -801,6 +813,7 @@ function renderActiveWorkout() {
       const setData = state.activeSets[setGlobalIdx];
       const done = setData.completed;
       const skip = setData.skipped;
+      const setTonnage = setData.reps * setData.weight;
       html += `<div class="set-row ${done?'completed':''} ${skip?'skipped':''}">
         <div class="set-num">S${s+1}</div>
         <div class="set-inputs">
@@ -808,6 +821,9 @@ function renderActiveWorkout() {
             <input type="number" inputmode="numeric" value="${setData.reps}" data-setidx="${setGlobalIdx}" data-field="reps" ${done||skip?'disabled':''}></div>
           <div><label style="font-size:10px;margin-bottom:2px">Weight</label>
             <input type="number" inputmode="decimal" step="${weightStep}" value="${setData.weight}" data-setidx="${setGlobalIdx}" data-field="weight" data-barbell="${isBarbell?'1':''}" data-exidx="${exIdx}" ${done||skip?'disabled':''}></div>
+          <div style="min-width:42px;text-align:right;align-self:flex-end;padding-bottom:10px">
+            <span style="font-family:var(--mono);font-size:11px;color:${done ? 'var(--green)' : 'var(--text3)'};font-weight:${done ? '600' : '400'}">${setTonnage >= 1000 ? (setTonnage/1000).toFixed(1)+'t' : setTonnage+'kg'}</span>
+          </div>
         </div>
         <div class="set-action ${done?'done':''} ${skip?'skipped':''}">
           <button class="set-action-main" data-setidx="${setGlobalIdx}" data-action="${done ? 'undoSet' : skip ? 'undoSet' : 'completeSet'}" data-exid="${ex.id}">
@@ -970,9 +986,13 @@ function renderStats() {
         const prev = exHistory.length > 1 ? exHistory[exHistory.length - 2] : null;
         const weightDelta = prev ? latest.maxWeight - prev.maxWeight : 0;
 
+        const iconSvg = equipIcon(ex.equipment, 16);
         html += `<div class="card">
           <div class="row" style="justify-content:space-between;margin-bottom:8px">
-            <h3 style="font-size:14px">${ex.name}</h3>
+            <div style="display:flex;align-items:center;gap:6px">
+              ${iconSvg}
+              <h3 style="font-size:14px">${ex.name}</h3>
+            </div>
             <span class="badge ${weightDelta > 0 ? 'badge-green' : weightDelta < 0 ? 'badge-red' : 'badge-gold'}">
               ${weightDelta > 0 ? '+' : ''}${weightDelta}kg
             </span>
@@ -980,9 +1000,10 @@ function renderStats() {
           <div class="row" style="gap:16px;font-size:12px;color:var(--text2);font-family:var(--mono)">
             <div>PR: ${maxWeight}kg</div>
             <div>Last: ${latest.maxWeight}kg</div>
-            <div>Vol: ${latest.volume.toFixed(0)}kg</div>
+            <div>Vol: ${(latest.volume/1000).toFixed(1)}t</div>
           </div>
-          ${renderMiniChart(exHistory)}
+          ${renderDualWeightChart(exHistory)}
+          ${renderVolumeChart(exHistory)}
         </div>`;
       });
     });
@@ -1028,32 +1049,84 @@ function getExerciseHistory(exId, dayIdx) {
       const completedSets = exData.sets.filter(s => s.completed);
       const maxWeight = completedSets.length ? Math.max(...completedSets.map(s => s.weight)) : 0;
       const volume = completedSets.reduce((v, s) => v + s.reps * s.weight, 0);
-      return { date: log.date, maxWeight, volume };
+      return { date: log.date, maxWeight, volume, isOverload: !!log.isOverloadWeek };
     })
     .filter(Boolean);
 }
 
-function renderMiniChart(history) {
+function renderDualWeightChart(history) {
   if (history.length < 2) return '';
-  const maxW = Math.max(...history.map(h => h.maxWeight));
-  const minW = Math.min(...history.map(h => h.maxWeight));
+  const w = 100, h = 50;
+  const allWeights = history.map(d => d.maxWeight);
+  const maxW = Math.max(...allWeights);
+  const minW = Math.min(...allWeights);
   const range = maxW - minW || 1;
-  const w = 100;
-  const h = 40;
+
+  const standard = history.filter(d => !d.isOverload);
+  const overload = history.filter(d => d.isOverload);
+
+  function toPoints(data) {
+    if (data.length < 2) return { line: '', dots: '' };
+    const pts = data.map((d, i) => {
+      const globalIdx = history.indexOf(d);
+      const x = (globalIdx / (history.length - 1)) * w;
+      const y = h - ((d.maxWeight - minW) / range) * (h - 10) - 5;
+      return { x, y };
+    });
+    const line = pts.map(p => `${p.x},${p.y}`).join(' ');
+    const dots = pts.map(p => `<circle cx="${p.x}" cy="${p.y}" r="2.5" />`).join('');
+    return { line, dots };
+  }
+
+  const std = toPoints(standard);
+  const ol = toPoints(overload);
+
+  let svg = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:50px;margin-top:8px" preserveAspectRatio="none">`;
+  if (std.line) svg += `<polyline points="${std.line}" fill="none" stroke="var(--gold)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+    <g fill="var(--gold)">${std.dots}</g>`;
+  if (ol.line) svg += `<polyline points="${ol.line}" fill="none" stroke="var(--red)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9" stroke-dasharray="3,2"/>
+    <g fill="var(--red)">${ol.dots}</g>`;
+  svg += '</svg>';
+
+  svg += `<div style="display:flex;gap:12px;justify-content:flex-end;margin-top:2px">
+    <span style="font-size:10px;color:var(--gold);display:flex;align-items:center;gap:4px">
+      <span style="width:12px;height:2px;background:var(--gold);display:inline-block;border-radius:1px"></span> Standard
+    </span>
+    <span style="font-size:10px;color:var(--red);display:flex;align-items:center;gap:4px">
+      <span style="width:12px;height:2px;background:var(--red);display:inline-block;border-radius:1px;border-top:1px dashed var(--red)"></span> Overload
+    </span>
+  </div>`;
+  return svg;
+}
+
+function renderVolumeChart(history) {
+  if (history.length < 2) return '';
+  const w = 100, h = 40;
+  const vols = history.map(d => d.volume);
+  const maxV = Math.max(...vols);
+  const minV = Math.min(...vols);
+  const range = maxV - minV || 1;
+
   const points = history.map((d, i) => {
     const x = (i / (history.length - 1)) * w;
-    const y = h - ((d.maxWeight - minW) / range) * (h - 8) - 4;
+    const y = h - ((d.volume - minV) / range) * (h - 10) - 5;
     return `${x},${y}`;
   }).join(' ');
 
-  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:40px;margin-top:8px" preserveAspectRatio="none">
-    <polyline points="${points}" fill="none" stroke="var(--gold)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-    ${history.map((d, i) => {
-      const x = (i / (history.length - 1)) * w;
-      const y = h - ((d.maxWeight - minW) / range) * (h - 8) - 4;
-      return `<circle cx="${x}" cy="${y}" r="2" fill="var(--gold)"/>`;
-    }).join('')}
-  </svg>`;
+  const dots = history.map((d, i) => {
+    const x = (i / (history.length - 1)) * w;
+    const y = h - ((d.volume - minV) / range) * (h - 10) - 5;
+    const col = d.isOverload ? 'var(--red)' : 'var(--green)';
+    return `<circle cx="${x}" cy="${y}" r="2.5" fill="${col}"/>`;
+  }).join('');
+
+  return `<div style="margin-top:8px">
+    <div style="font-size:10px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Volume (tonnes)</div>
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:40px" preserveAspectRatio="none">
+      <polyline points="${points}" fill="none" stroke="var(--green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>
+      ${dots}
+    </svg>
+  </div>`;
 }
 
 // ============================================================
