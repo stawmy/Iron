@@ -438,6 +438,8 @@ let state = {
   isOverloadWeek: false,
   // dismissed suggestions (keyed by exId_weight)
   dismissedSuggestions: {},
+  // help legend visibility
+  showHelp: false,
 };
 
 // ============================================================
@@ -556,6 +558,39 @@ function renderHome() {
   });
 
   html += renderSuggestions();
+
+  // Help legend for suggestion types (collapsible)
+  const suggestions = generateSuggestions();
+  if (suggestions.length > 0) {
+    html += `<div style="margin-top:8px">
+      <button class="btn btn-secondary btn-sm" style="width:auto;font-size:11px;padding:6px 12px;opacity:0.6" data-action="toggleHelp">
+        What do these mean?
+      </button>
+      <div id="help-legend" class="${state.showHelp ? '' : 'hidden'}" style="margin-top:10px">
+        <div class="card" style="border:1px solid var(--border)">
+          <div style="display:flex;flex-direction:column;gap:10px;font-size:12px;line-height:1.5">
+            <div style="display:flex;gap:10px;align-items:flex-start">
+              <span class="badge badge-green" style="flex-shrink:0;margin-top:2px">Ready</span>
+              <span style="color:var(--text2)">You hit every rep of every set at the target weight for 2+ sessions with no drop in reps or weight. Safe to increase.</span>
+            </div>
+            <div style="display:flex;gap:10px;align-items:flex-start">
+              <span class="badge badge-gold" style="flex-shrink:0;margin-top:2px">Almost</span>
+              <span style="color:var(--text2)">One clean session done, one more needed. Or your overload sessions look strong but standard week needs one more clean run.</span>
+            </div>
+            <div style="display:flex;gap:10px;align-items:flex-start">
+              <span class="badge badge-red" style="flex-shrink:0;margin-top:2px">Hold</span>
+              <span style="color:var(--text2)">Your reps dropped across sets (e.g. 8, 8, 7, 6) or you had to lower the weight mid exercise in the last 2 sessions. Stay at this weight until all sets are clean.</span>
+            </div>
+            <div style="display:flex;gap:10px;align-items:flex-start">
+              <span class="badge badge-gold" style="flex-shrink:0;margin-top:2px">Plateau</span>
+              <span style="color:var(--text2)">4+ sessions at this weight without clean progression. Try a smaller weight jump (1.25kg for barbell) or add 1 rep per set before increasing.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
   html += '</div>';
   return html;
 }
@@ -589,13 +624,19 @@ function renderSuggestions() {
   let html = '<h3 style="margin-top:24px;margin-bottom:12px;color:var(--text2)">Progression</h3>';
   suggestions.forEach((s, i) => {
     const iconSvg = equipIcon(s.equipment, 16);
+    const badgeMap = {
+      increase: { cls: 'badge-green', text: 'Ready' },
+      nearmiss: { cls: 'badge-gold', text: 'Almost' },
+      hold: { cls: 'badge-red', text: 'Hold' },
+      stall: { cls: 'badge-gold', text: 'Plateau' },
+    };
+    const badge = badgeMap[s.type] || { cls: 'badge-gold', text: '' };
+
     html += `<div class="card" style="border-left:3px solid ${s.color}">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         ${iconSvg}
         <span style="font-size:14px;font-weight:600">${s.exercise}</span>
-        <span class="badge ${s.type === 'increase' ? 'badge-green' : 'badge-gold'}" style="margin-left:auto">
-          ${s.type === 'increase' ? 'Ready' : 'Almost'}
-        </span>
+        <span class="badge ${badge.cls}" style="margin-left:auto">${badge.text}</span>
       </div>
       <div style="font-size:12px;color:var(--text2);line-height:1.5;margin-bottom:${s.type === 'increase' ? '10' : '0'}px">${s.message}</div>`;
 
@@ -616,88 +657,170 @@ let lastSuggestions = [];
 
 function generateSuggestions() {
   const suggestions = [];
-  if (!state.programme || state.logs.length < 2) { lastSuggestions = []; return suggestions; }
+  if (!state.programme || state.logs.length < 1) { lastSuggestions = []; return suggestions; }
 
-  // Load dismissed suggestions
   const dismissed = state.dismissedSuggestions || {};
 
   state.programme.days.forEach((day, di) => {
     day.exercises.forEach((ex) => {
-      // Skip if dismissed at this weight
       const dismissKey = `${ex.id}_${ex.weight}`;
       if (dismissed[dismissKey]) return;
-
-      // Only consider non-overload sessions for progression
-      const exLogs = state.logs
-        .filter(l => l.dayIndex === di && !l.isOverloadWeek)
-        .sort((a, b) => new Date(b.date) - new Date(a.date))
-        .slice(0, 3);
-
-      if (exLogs.length < 1) return;
 
       const targetReps = ex.reps;
       const targetSets = ex.sets;
       const targetWeight = ex.weight;
-      let sessionsAtTarget = 0;
-      let totalChecked = 0;
 
-      for (const log of exLogs.slice(0, 3)) {
+      // Get standard and overload sessions separately
+      const stdLogs = state.logs
+        .filter(l => l.dayIndex === di && !l.isOverloadWeek)
+        .sort((a, b) => new Date(b.date) - new Date(a.date))
+        .slice(0, 5);
+
+      const olLogs = state.logs
+        .filter(l => l.dayIndex === di && l.isOverloadWeek)
+        .sort((a, b) => new Date(b.date) - new Date(a.date))
+        .slice(0, 3);
+
+      if (stdLogs.length < 1) return;
+
+      // ── Analyse standard sessions ──
+      function analyseSession(log) {
         const exData = log.exercises.find(e => e.id === ex.id);
-        if (!exData) continue;
-        totalChecked++;
+        if (!exData) return null;
+        const completed = exData.sets.filter(s => s.completed);
+        if (!completed.length) return null;
 
-        const completedSets = exData.sets.filter(s => s.completed);
-        // Must have completed at least the target number of sets
-        if (completedSets.length < targetSets) continue;
+        const allHitTarget = completed.length >= targetSets &&
+          completed.every(s => s.reps >= targetReps && s.weight >= targetWeight);
 
-        // Every completed set must have hit target reps at target weight
-        // If someone dropped weight or reps on any set, this fails
-        const allHitTarget = completedSets.every(s =>
-          s.reps >= targetReps && s.weight >= targetWeight
-        );
-        if (allHitTarget) sessionsAtTarget++;
+        // Rep dropoff: did reps decline across sets?
+        const reps = completed.map(s => s.reps);
+        const droppedReps = reps.length >= 2 && reps[reps.length - 1] < reps[0];
+        const totalDropped = reps.length >= 2 ? reps[0] - reps[reps.length - 1] : 0;
+
+        // Weight drop: did they lower weight mid exercise?
+        const weights = completed.map(s => s.weight);
+        const droppedWeight = weights.length >= 2 && weights[weights.length - 1] < weights[0];
+
+        const volume = completed.reduce((v, s) => v + s.reps * s.weight, 0);
+
+        return { allHitTarget, droppedReps, droppedWeight, totalDropped, reps, weights, volume, completed };
       }
 
-      if (sessionsAtTarget >= 2) {
+      const stdAnalysis = stdLogs.map(analyseSession).filter(Boolean);
+      const olAnalysis = olLogs.map(analyseSession).filter(Boolean);
+
+      if (stdAnalysis.length < 1) return;
+
+      const cleanSessions = stdAnalysis.filter(a => a.allHitTarget && !a.droppedReps && !a.droppedWeight).length;
+      const repDropSessions = stdAnalysis.slice(0, 2).filter(a => a.droppedReps).length;
+      const weightDropSessions = stdAnalysis.slice(0, 2).filter(a => a.droppedWeight).length;
+
+      // ── Overload feedback ──
+      // If overload sessions are clean, standard weight might be too easy
+      const olClean = olAnalysis.length > 0 && olAnalysis[0].allHitTarget && !olAnalysis[0].droppedReps;
+
+      // ── DECISION LOGIC ──
+
+      // 1. Rep dropoff warning: reps dropped in last 2 standard sessions
+      if (repDropSessions >= 2 && cleanSessions < 2) {
+        const lastDrop = stdAnalysis[0];
+        suggestions.push({
+          exercise: ex.name,
+          equipment: ex.equipment || 'dumbbell',
+          message: `Reps dropping across sets (${lastDrop.reps.join(', ')}). Hold at ${targetWeight}kg until all ${targetSets} sets hit ${targetReps} reps cleanly.`,
+          color: 'var(--red)',
+          exId: ex.id, dayIdx: di,
+          newWeight: targetWeight, increment: 0, hasOverload: false,
+          type: 'hold',
+        });
+        return;
+      }
+
+      // 2. Weight drop warning
+      if (weightDropSessions >= 2) {
+        suggestions.push({
+          exercise: ex.name,
+          equipment: ex.equipment || 'dumbbell',
+          message: `Weight dropped mid exercise in last 2 sessions. ${targetWeight}kg may be at your current limit. Keep at it until you can hold the weight across all sets.`,
+          color: 'var(--red)',
+          exId: ex.id, dayIdx: di,
+          newWeight: targetWeight, increment: 0, hasOverload: false,
+          type: 'hold',
+        });
+        return;
+      }
+
+      // 3. Ready to increase: 2+ clean standard sessions
+      if (cleanSessions >= 2) {
         const increment = 2.5;
         const newWeight = targetWeight + increment;
         const hasOverload = !!ex.overloadWeek;
         let olNote = '';
         if (hasOverload) {
-          const olNew = ex.overloadWeek.weight + increment;
-          olNote = ` Overload week will also move from ${ex.overloadWeek.weight}kg to ${olNew}kg.`;
+          olNote = ` Overload week will also move from ${ex.overloadWeek.weight}kg to ${(ex.overloadWeek.weight + increment)}kg.`;
+        }
+        let olBoost = '';
+        if (olClean && hasOverload) {
+          olBoost = ' Overload sessions also went cleanly, confirming you are ready.';
         }
         suggestions.push({
           exercise: ex.name,
           equipment: ex.equipment || 'dumbbell',
-          message: `${targetSets}×${targetReps} at ${targetWeight}kg completed in full for 2 sessions. Every set hit target reps at target weight. Ready for ${newWeight}kg.${olNote}`,
+          message: `${targetSets}×${targetReps} at ${targetWeight}kg completed cleanly for ${cleanSessions} sessions. No rep dropoff, no weight drops.${olBoost}${olNote}`,
           color: 'var(--green)',
-          exId: ex.id,
-          dayIdx: di,
-          newWeight,
-          increment,
-          hasOverload,
+          exId: ex.id, dayIdx: di,
+          newWeight, increment, hasOverload,
           type: 'increase',
         });
-      } else if (sessionsAtTarget === 1 && totalChecked >= 2) {
-        // Near miss: show encouraging note but no action button
+        return;
+      }
+
+      // 4. Overload performing well but standard not yet clean enough
+      if (olClean && cleanSessions < 2 && stdAnalysis.length >= 2 && repDropSessions < 2) {
         suggestions.push({
           exercise: ex.name,
           equipment: ex.equipment || 'dumbbell',
-          message: `1 of 2 sessions hit ${targetSets}×${targetReps} at ${targetWeight}kg on every set. One more clean session and you can move up.`,
+          message: `Overload sessions going well but standard sessions not yet fully clean. Close to moving up. Focus on hitting every rep of every set.`,
+          color: 'var(--blue)',
+          exId: ex.id, dayIdx: di,
+          newWeight: targetWeight, increment: 0, hasOverload: false,
+          type: 'nearmiss',
+        });
+        return;
+      }
+
+      // 5. Stall detection: 4+ standard sessions at same weight without progression
+      if (stdAnalysis.length >= 4 && cleanSessions < 2) {
+        const isBarbell = ex.equipment === 'barbell';
+        suggestions.push({
+          exercise: ex.name,
+          equipment: ex.equipment || 'dumbbell',
+          message: `${stdAnalysis.length} sessions at ${targetWeight}kg without hitting clean progression. Consider ${isBarbell ? 'a smaller 1.25kg increment' : 'adding 1 rep per set before increasing weight'}.`,
           color: 'var(--gold)',
-          exId: ex.id,
-          dayIdx: di,
-          newWeight: targetWeight,
-          increment: 0,
-          hasOverload: false,
+          exId: ex.id, dayIdx: di,
+          newWeight: targetWeight, increment: 0, hasOverload: false,
+          type: 'stall',
+        });
+        return;
+      }
+
+      // 6. Near miss: 1 clean session
+      if (cleanSessions === 1 && stdAnalysis.length >= 2) {
+        suggestions.push({
+          exercise: ex.name,
+          equipment: ex.equipment || 'dumbbell',
+          message: `1 clean session at ${targetWeight}kg. One more and you can move up.`,
+          color: 'var(--gold)',
+          exId: ex.id, dayIdx: di,
+          newWeight: targetWeight, increment: 0, hasOverload: false,
           type: 'nearmiss',
         });
       }
     });
   });
 
-  lastSuggestions = suggestions.slice(0, 6);
+  lastSuggestions = suggestions.slice(0, 8);
   return lastSuggestions;
 }
 
@@ -985,38 +1108,67 @@ function renderStats() {
       <div class="stat-box"><div class="stat-val">${streak}w</div><div class="stat-label">Week Streak</div></div>
     </div>`;
 
-  // Per exercise PRs and history
+  // Per exercise 30-day summary
   if (state.programme) {
-    html += '<h3 style="margin-bottom:12px;color:var(--text2)">Exercise History</h3>';
+    html += '<h3 style="margin-bottom:12px;color:var(--text2)">30 Day Summary</h3>';
+    const thirtyDaysAgo = new Date(Date.now() - 30*24*60*60*1000);
+
     state.programme.days.forEach((day, di) => {
       day.exercises.forEach(ex => {
-        const exHistory = getExerciseHistory(ex.id, di);
-        if (!exHistory.length) return;
+        const allHistory = getExerciseHistory(ex.id, di);
+        if (!allHistory.length) return;
 
-        const maxWeight = Math.max(...exHistory.map(h => h.maxWeight));
-        const maxVol = Math.max(...exHistory.map(h => h.volume));
-        const latest = exHistory[exHistory.length - 1];
-        const prev = exHistory.length > 1 ? exHistory[exHistory.length - 2] : null;
-        const weightDelta = prev ? latest.maxWeight - prev.maxWeight : 0;
+        // Last 30 days only
+        const recent = allHistory.filter(h => new Date(h.date) >= thirtyDaysAgo);
+        const sessions = recent.length;
+        if (sessions === 0) return;
+
+        // Split by type
+        const stdRecent = recent.filter(h => !h.isOverload);
+        const olRecent = recent.filter(h => h.isOverload);
+
+        // Weight trends
+        const stdWeightTrend = getTrend(stdRecent.map(h => h.maxWeight));
+        const olWeightTrend = getTrend(olRecent.map(h => h.maxWeight));
+
+        // Volume trends
+        const stdVolTrend = getTrend(stdRecent.map(h => h.volume));
+        const olVolTrend = getTrend(olRecent.map(h => h.volume));
+
+        // Overall bests
+        const allTimePR = Math.max(...allHistory.map(h => h.maxWeight));
+        const allTimeVolPR = Math.max(...allHistory.map(h => h.volume));
+        const latest = allHistory[allHistory.length - 1];
 
         const iconSvg = equipIcon(ex.equipment, 16);
         html += `<div class="card">
-          <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <div class="row" style="justify-content:space-between;margin-bottom:10px">
             <div style="display:flex;align-items:center;gap:6px">
               ${iconSvg}
-              <h3 style="font-size:14px">${ex.name}</h3>
+              <h3 style="font-size:14px;margin:0">${ex.name}</h3>
             </div>
-            <span class="badge ${weightDelta > 0 ? 'badge-green' : weightDelta < 0 ? 'badge-red' : 'badge-gold'}">
-              ${weightDelta > 0 ? '+' : ''}${weightDelta}kg
-            </span>
+            <div style="font-size:11px;color:var(--text3)">${sessions} sessions</div>
           </div>
-          <div class="row" style="gap:16px;font-size:12px;color:var(--text2);font-family:var(--mono)">
-            <div>PR: ${maxWeight}kg</div>
-            <div>Last: ${latest.maxWeight}kg</div>
-            <div>Vol: ${(latest.volume/1000).toFixed(1)}t</div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+            <div style="background:var(--surface2);border-radius:6px;padding:10px">
+              <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">Weight PR</div>
+              <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--gold)">${allTimePR}kg</div>
+            </div>
+            <div style="background:var(--surface2);border-radius:6px;padding:10px">
+              <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">Best Volume</div>
+              <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--green)">${(allTimeVolPR/1000).toFixed(1)}t</div>
+            </div>
           </div>
-          ${renderDualWeightChart(exHistory)}
-          ${renderVolumeChart(exHistory)}
+
+          ${renderSparkline(recent.map(h => h.maxWeight), recent.map(h => h.isOverload))}
+
+          <div style="display:flex;flex-direction:column;gap:6px;margin-top:10px">
+            ${stdRecent.length >= 2 ? renderTrendLine('Standard weight', stdWeightTrend, 'kg') : ''}
+            ${olRecent.length >= 2 ? renderTrendLine('Overload weight', olWeightTrend, 'kg') : ''}
+            ${stdRecent.length >= 2 ? renderTrendLine('Standard volume', stdVolTrend, 'kg') : ''}
+            ${olRecent.length >= 2 ? renderTrendLine('Overload volume', olVolTrend, 'kg') : ''}
+          </div>
         </div>`;
       });
     });
@@ -1067,104 +1219,53 @@ function getExerciseHistory(exId, dayIdx) {
     .filter(Boolean);
 }
 
-function renderDualWeightChart(history) {
-  if (history.length < 2) return '';
-  const w = 200, h = 70, pad = 5;
-  const allWeights = history.map(d => d.maxWeight);
-  const maxW = Math.max(...allWeights);
-  const minW = Math.min(...allWeights);
-  const range = maxW - minW || 1;
-
-  const standard = [];
-  const overload = [];
-  history.forEach((d, i) => {
-    const x = (i / (history.length - 1)) * (w - pad*2) + pad;
-    const y = h - pad - ((d.maxWeight - minW) / range) * (h - pad*3);
-    const pt = { x, y, weight: d.maxWeight };
-    if (d.isOverload) overload.push(pt); else standard.push(pt);
-  });
-
-  function buildLine(pts, colour, dashed) {
-    if (!pts.length) return '';
-    const line = pts.length > 1 ? `<polyline points="${pts.map(p=>`${p.x},${p.y}`).join(' ')}" fill="none" stroke="${colour}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${dashed ? 'stroke-dasharray="4,3"' : ''}/>` : '';
-    const dots = pts.map(p => `<circle cx="${p.x}" cy="${p.y}" r="3" fill="${colour}"/>`).join('');
-    return line + dots;
-  }
-
-  // Y axis labels
-  const yLabels = `
-    <text x="${w - 2}" y="${pad + 4}" font-size="7" fill="rgba(255,255,255,0.3)" font-family="var(--mono)" text-anchor="end">${maxW}kg</text>
-    <text x="${w - 2}" y="${h - pad + 2}" font-size="7" fill="rgba(255,255,255,0.3)" font-family="var(--mono)" text-anchor="end">${minW}kg</text>`;
-
-  let svg = `<div style="margin-top:10px">
-    <div style="font-size:10px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Weight</div>
-    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:70px" preserveAspectRatio="none">
-      <line x1="${pad}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}" stroke="rgba(255,255,255,0.05)" stroke-width="0.5"/>
-      <line x1="${pad}" y1="${pad}" x2="${w-pad}" y2="${pad}" stroke="rgba(255,255,255,0.05)" stroke-width="0.5"/>
-      ${yLabels}
-      ${buildLine(standard, '#d4a853', false)}
-      ${buildLine(overload, '#e8453c', true)}
-    </svg>
-    <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:2px">
-      <span style="font-size:10px;color:var(--gold);display:flex;align-items:center;gap:4px">
-        <span style="width:14px;height:2px;background:var(--gold);display:inline-block;border-radius:1px"></span> Standard
-      </span>
-      <span style="font-size:10px;color:var(--red);display:flex;align-items:center;gap:4px">
-        <span style="width:14px;height:2px;background:var(--red);display:inline-block;border-radius:1px;border-top:1px dashed var(--red)"></span> Overload
-      </span>
-    </div>
-  </div>`;
-  return svg;
+function getTrend(values) {
+  if (values.length < 2) return { delta: 0, pct: 0, direction: 'flat' };
+  const first = values[0];
+  const last = values[values.length - 1];
+  const delta = last - first;
+  const pct = first > 0 ? (delta / first) * 100 : 0;
+  const direction = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat';
+  return { delta, pct, direction, first, last };
 }
 
-function renderVolumeChart(history) {
-  if (history.length < 2) return '';
-  const w = 200, h = 60, pad = 5;
-  const vols = history.map(d => d.volume);
-  const maxV = Math.max(...vols);
-  const minV = Math.min(...vols);
+function renderTrendLine(label, trend, unit) {
+  const col = trend.direction === 'up' ? 'var(--green)' : trend.direction === 'down' ? 'var(--red)' : 'var(--text3)';
+  const arrow = trend.direction === 'up' ? '&#9650;' : trend.direction === 'down' ? '&#9660;' : '&#9644;';
+  const sign = trend.delta > 0 ? '+' : '';
+  const deltaDisplay = Math.abs(trend.delta) >= 1000 ? sign + (trend.delta/1000).toFixed(1) + 't' : sign + trend.delta.toFixed(1) + unit;
+  const pctDisplay = sign + trend.pct.toFixed(0) + '%';
+  return `<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px">
+    <span style="color:var(--text3)">${label}</span>
+    <span style="color:${col};font-family:var(--mono);font-weight:600">
+      <span style="font-size:8px;vertical-align:middle">${arrow}</span> ${deltaDisplay} <span style="color:var(--text3);font-weight:400">(${pctDisplay})</span>
+    </span>
+  </div>`;
+}
+
+function renderSparkline(values, isOverloadFlags) {
+  if (values.length < 2) return '';
+  const w = 200, h = 32, pad = 4;
+  const maxV = Math.max(...values);
+  const minV = Math.min(...values);
   const range = maxV - minV || 1;
 
-  // Build points and calculate deltas
-  const pts = history.map((d, i) => {
-    const x = (i / (history.length - 1)) * (w - pad*2) + pad;
-    const y = h - pad - ((d.volume - minV) / range) * (h - pad*3);
-    return { x, y, vol: d.volume, isOverload: d.isOverload };
+  const pts = values.map((v, i) => {
+    const x = (i / (values.length - 1)) * (w - pad*2) + pad;
+    const y = h - pad - ((v - minV) / range) * (h - pad*2);
+    return { x, y };
   });
 
-  const line = `<polyline points="${pts.map(p=>`${p.x},${p.y}`).join(' ')}" fill="none" stroke="var(--green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>`;
-  const dots = pts.map(p => {
-    const col = p.isOverload ? 'var(--red)' : 'var(--green)';
-    return `<circle cx="${p.x}" cy="${p.y}" r="3" fill="${col}"/>`;
+  const line = pts.map(p => `${p.x},${p.y}`).join(' ');
+  const dots = pts.map((p, i) => {
+    const col = isOverloadFlags[i] ? 'var(--red)' : 'var(--gold)';
+    return `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="${col}"/>`;
   }).join('');
 
-  // Delta labels on last few points
-  const deltaLabels = pts.map((p, i) => {
-    if (i === 0) return '';
-    const delta = p.vol - pts[i-1].vol;
-    if (delta === 0) return '';
-    const sign = delta > 0 ? '+' : '';
-    const col = delta > 0 ? 'var(--green)' : 'var(--red)';
-    const displayDelta = Math.abs(delta) >= 1000 ? sign + (delta/1000).toFixed(1) + 't' : sign + delta.toFixed(0) + 'kg';
-    // Only show labels on last 4 points to avoid clutter
-    if (i < pts.length - 4) return '';
-    return `<text x="${p.x}" y="${p.y - 6}" font-size="6" fill="${col}" font-family="var(--mono)" text-anchor="middle">${displayDelta}</text>`;
-  }).join('');
-
-  const maxLabel = (maxV/1000).toFixed(1) + 't';
-  const minLabel = (minV/1000).toFixed(1) + 't';
-
-  return `<div style="margin-top:10px">
-    <div style="font-size:10px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Volume</div>
-    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:60px" preserveAspectRatio="none">
-      <line x1="${pad}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}" stroke="rgba(255,255,255,0.05)" stroke-width="0.5"/>
-      <text x="${w - 2}" y="${pad + 4}" font-size="7" fill="rgba(255,255,255,0.3)" font-family="var(--mono)" text-anchor="end">${maxLabel}</text>
-      <text x="${w - 2}" y="${h - pad + 2}" font-size="7" fill="rgba(255,255,255,0.3)" font-family="var(--mono)" text-anchor="end">${minLabel}</text>
-      ${line}
-      ${dots}
-      ${deltaLabels}
-    </svg>
-  </div>`;
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:32px" preserveAspectRatio="none">
+    <polyline points="${line}" fill="none" stroke="rgba(212,168,83,0.4)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}
+  </svg>`;
 }
 
 // ============================================================
@@ -1389,6 +1490,11 @@ function handleAction(action, data) {
     case 'toggleWeek':
       state.isOverloadWeek = !state.isOverloadWeek;
       dbPut('settings', { key: 'isOverloadWeek', value: state.isOverloadWeek });
+      render();
+      break;
+
+    case 'toggleHelp':
+      state.showHelp = !state.showHelp;
       render();
       break;
 
