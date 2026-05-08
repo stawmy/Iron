@@ -524,14 +524,24 @@ function renderHome() {
 
     <h3 style="margin-bottom:12px;color:var(--text2)">Start a Workout</h3>`;
 
-  p.days.forEach((day, i) => {
+  // Sort days by oldest last done first (so next workout to do is at top)
+  const dayOrder = p.days.map((day, i) => {
     const lastLog = getLastLogForDay(i);
+    const lastTime = lastLog ? new Date(lastLog.date).getTime() : 0;
+    return { day, idx: i, lastTime, lastLog };
+  }).sort((a, b) => a.lastTime - b.lastTime);
+
+  dayOrder.forEach(({ day, idx: i, lastLog }) => {
     const lastDate = lastLog ? new Date(lastLog.date).toLocaleDateString('en-GB', { day:'numeric', month:'short' }) : 'Not yet';
+    const isNext = dayOrder[0].idx === i;
     html += `
-      <div class="card" style="cursor:pointer" data-action="startDay" data-day="${i}">
+      <div class="card" style="cursor:pointer${isNext ? ';border-color:rgba(212,168,83,0.3)' : ''}" data-action="startDay" data-day="${i}">
         <div class="row" style="justify-content:space-between">
           <div>
-            <h3>${day.name}</h3>
+            <div style="display:flex;align-items:center;gap:8px">
+              <h3>${day.name}</h3>
+              ${isNext ? '<span class="badge badge-gold">Next</span>' : ''}
+            </div>
             <div style="font-size:12px;color:var(--text2);margin-top:2px">${day.subtitle}</div>
           </div>
           <div style="text-align:right">
@@ -894,8 +904,11 @@ function renderProgramme() {
   p.days.forEach((day, di) => {
     html += `<div class="card">
       <div class="row" style="justify-content:space-between;margin-bottom:12px">
-        <div>
-          <h3>${day.name}</h3>
+        <div style="flex:1">
+          <div class="row" style="gap:6px;align-items:center">
+            <h3 style="margin:0">${day.name}</h3>
+            <button style="background:none;border:none;color:var(--text3);font-size:14px;padding:4px;cursor:pointer" data-action="renameDay" data-day="${di}">&#9998;</button>
+          </div>
           <div style="font-size:12px;color:var(--text3)">${day.subtitle}</div>
         </div>
         <button class="btn btn-secondary btn-sm" style="width:auto" data-action="addExercise" data-day="${di}">+ Add</button>
@@ -1056,75 +1069,100 @@ function getExerciseHistory(exId, dayIdx) {
 
 function renderDualWeightChart(history) {
   if (history.length < 2) return '';
-  const w = 100, h = 50;
+  const w = 200, h = 70, pad = 5;
   const allWeights = history.map(d => d.maxWeight);
   const maxW = Math.max(...allWeights);
   const minW = Math.min(...allWeights);
   const range = maxW - minW || 1;
 
-  const standard = history.filter(d => !d.isOverload);
-  const overload = history.filter(d => d.isOverload);
+  const standard = [];
+  const overload = [];
+  history.forEach((d, i) => {
+    const x = (i / (history.length - 1)) * (w - pad*2) + pad;
+    const y = h - pad - ((d.maxWeight - minW) / range) * (h - pad*3);
+    const pt = { x, y, weight: d.maxWeight };
+    if (d.isOverload) overload.push(pt); else standard.push(pt);
+  });
 
-  function toPoints(data) {
-    if (data.length < 2) return { line: '', dots: '' };
-    const pts = data.map((d, i) => {
-      const globalIdx = history.indexOf(d);
-      const x = (globalIdx / (history.length - 1)) * w;
-      const y = h - ((d.maxWeight - minW) / range) * (h - 10) - 5;
-      return { x, y };
-    });
-    const line = pts.map(p => `${p.x},${p.y}`).join(' ');
-    const dots = pts.map(p => `<circle cx="${p.x}" cy="${p.y}" r="2.5" />`).join('');
-    return { line, dots };
+  function buildLine(pts, colour, dashed) {
+    if (!pts.length) return '';
+    const line = pts.length > 1 ? `<polyline points="${pts.map(p=>`${p.x},${p.y}`).join(' ')}" fill="none" stroke="${colour}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${dashed ? 'stroke-dasharray="4,3"' : ''}/>` : '';
+    const dots = pts.map(p => `<circle cx="${p.x}" cy="${p.y}" r="3" fill="${colour}"/>`).join('');
+    return line + dots;
   }
 
-  const std = toPoints(standard);
-  const ol = toPoints(overload);
+  // Y axis labels
+  const yLabels = `
+    <text x="${w - 2}" y="${pad + 4}" font-size="7" fill="rgba(255,255,255,0.3)" font-family="var(--mono)" text-anchor="end">${maxW}kg</text>
+    <text x="${w - 2}" y="${h - pad + 2}" font-size="7" fill="rgba(255,255,255,0.3)" font-family="var(--mono)" text-anchor="end">${minW}kg</text>`;
 
-  let svg = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:50px;margin-top:8px" preserveAspectRatio="none">`;
-  if (std.line) svg += `<polyline points="${std.line}" fill="none" stroke="var(--gold)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
-    <g fill="var(--gold)">${std.dots}</g>`;
-  if (ol.line) svg += `<polyline points="${ol.line}" fill="none" stroke="var(--red)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9" stroke-dasharray="3,2"/>
-    <g fill="var(--red)">${ol.dots}</g>`;
-  svg += '</svg>';
-
-  svg += `<div style="display:flex;gap:12px;justify-content:flex-end;margin-top:2px">
-    <span style="font-size:10px;color:var(--gold);display:flex;align-items:center;gap:4px">
-      <span style="width:12px;height:2px;background:var(--gold);display:inline-block;border-radius:1px"></span> Standard
-    </span>
-    <span style="font-size:10px;color:var(--red);display:flex;align-items:center;gap:4px">
-      <span style="width:12px;height:2px;background:var(--red);display:inline-block;border-radius:1px;border-top:1px dashed var(--red)"></span> Overload
-    </span>
+  let svg = `<div style="margin-top:10px">
+    <div style="font-size:10px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Weight</div>
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:70px" preserveAspectRatio="none">
+      <line x1="${pad}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}" stroke="rgba(255,255,255,0.05)" stroke-width="0.5"/>
+      <line x1="${pad}" y1="${pad}" x2="${w-pad}" y2="${pad}" stroke="rgba(255,255,255,0.05)" stroke-width="0.5"/>
+      ${yLabels}
+      ${buildLine(standard, '#d4a853', false)}
+      ${buildLine(overload, '#e8453c', true)}
+    </svg>
+    <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:2px">
+      <span style="font-size:10px;color:var(--gold);display:flex;align-items:center;gap:4px">
+        <span style="width:14px;height:2px;background:var(--gold);display:inline-block;border-radius:1px"></span> Standard
+      </span>
+      <span style="font-size:10px;color:var(--red);display:flex;align-items:center;gap:4px">
+        <span style="width:14px;height:2px;background:var(--red);display:inline-block;border-radius:1px;border-top:1px dashed var(--red)"></span> Overload
+      </span>
+    </div>
   </div>`;
   return svg;
 }
 
 function renderVolumeChart(history) {
   if (history.length < 2) return '';
-  const w = 100, h = 40;
+  const w = 200, h = 60, pad = 5;
   const vols = history.map(d => d.volume);
   const maxV = Math.max(...vols);
   const minV = Math.min(...vols);
   const range = maxV - minV || 1;
 
-  const points = history.map((d, i) => {
-    const x = (i / (history.length - 1)) * w;
-    const y = h - ((d.volume - minV) / range) * (h - 10) - 5;
-    return `${x},${y}`;
-  }).join(' ');
+  // Build points and calculate deltas
+  const pts = history.map((d, i) => {
+    const x = (i / (history.length - 1)) * (w - pad*2) + pad;
+    const y = h - pad - ((d.volume - minV) / range) * (h - pad*3);
+    return { x, y, vol: d.volume, isOverload: d.isOverload };
+  });
 
-  const dots = history.map((d, i) => {
-    const x = (i / (history.length - 1)) * w;
-    const y = h - ((d.volume - minV) / range) * (h - 10) - 5;
-    const col = d.isOverload ? 'var(--red)' : 'var(--green)';
-    return `<circle cx="${x}" cy="${y}" r="2.5" fill="${col}"/>`;
+  const line = `<polyline points="${pts.map(p=>`${p.x},${p.y}`).join(' ')}" fill="none" stroke="var(--green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>`;
+  const dots = pts.map(p => {
+    const col = p.isOverload ? 'var(--red)' : 'var(--green)';
+    return `<circle cx="${p.x}" cy="${p.y}" r="3" fill="${col}"/>`;
   }).join('');
 
-  return `<div style="margin-top:8px">
-    <div style="font-size:10px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Volume (tonnes)</div>
-    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:40px" preserveAspectRatio="none">
-      <polyline points="${points}" fill="none" stroke="var(--green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>
+  // Delta labels on last few points
+  const deltaLabels = pts.map((p, i) => {
+    if (i === 0) return '';
+    const delta = p.vol - pts[i-1].vol;
+    if (delta === 0) return '';
+    const sign = delta > 0 ? '+' : '';
+    const col = delta > 0 ? 'var(--green)' : 'var(--red)';
+    const displayDelta = Math.abs(delta) >= 1000 ? sign + (delta/1000).toFixed(1) + 't' : sign + delta.toFixed(0) + 'kg';
+    // Only show labels on last 4 points to avoid clutter
+    if (i < pts.length - 4) return '';
+    return `<text x="${p.x}" y="${p.y - 6}" font-size="6" fill="${col}" font-family="var(--mono)" text-anchor="middle">${displayDelta}</text>`;
+  }).join('');
+
+  const maxLabel = (maxV/1000).toFixed(1) + 't';
+  const minLabel = (minV/1000).toFixed(1) + 't';
+
+  return `<div style="margin-top:10px">
+    <div style="font-size:10px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Volume</div>
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:60px" preserveAspectRatio="none">
+      <line x1="${pad}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}" stroke="rgba(255,255,255,0.05)" stroke-width="0.5"/>
+      <text x="${w - 2}" y="${pad + 4}" font-size="7" fill="rgba(255,255,255,0.3)" font-family="var(--mono)" text-anchor="end">${maxLabel}</text>
+      <text x="${w - 2}" y="${h - pad + 2}" font-size="7" fill="rgba(255,255,255,0.3)" font-family="var(--mono)" text-anchor="end">${minLabel}</text>
+      ${line}
       ${dots}
+      ${deltaLabels}
     </svg>
   </div>`;
 }
@@ -1135,7 +1173,25 @@ function renderVolumeChart(history) {
 function renderModal() {
   if (state.modal === 'editExercise') return renderEditExerciseModal();
   if (state.modal === 'addExercise') return renderAddExerciseModal();
+  if (state.modal === 'renameDay') return renderRenameDayModal();
   return '';
+}
+
+function renderRenameDayModal() {
+  const day = state.programme.days[state.editingDayIdx];
+  if (!day) return '';
+  return `<div class="modal-overlay" data-action="closeModal">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-handle"></div>
+      <h2 style="margin-bottom:16px">Rename Workout</h2>
+      <label>Name</label>
+      <input type="text" id="ed-day-name" value="${day.name}" placeholder="e.g. Push Day">
+      <label class="mt">Subtitle</label>
+      <input type="text" id="ed-day-subtitle" value="${day.subtitle}" placeholder="e.g. Chest + Shoulders">
+      <button class="btn btn-primary mt2" data-action="saveDayName">Save</button>
+      <button class="btn btn-secondary mt" data-action="closeModal">Cancel</button>
+    </div>
+  </div>`;
 }
 
 function renderEditExerciseModal() {
@@ -1435,6 +1491,25 @@ function handleAction(action, data) {
       state.modal = 'addExercise';
       render();
       break;
+
+    case 'renameDay':
+      state.editingDayIdx = parseInt(data.day);
+      state.modal = 'renameDay';
+      render();
+      break;
+
+    case 'saveDayName': {
+      const nameEl = document.getElementById('ed-day-name');
+      const subEl = document.getElementById('ed-day-subtitle');
+      const day = state.programme.days[state.editingDayIdx];
+      if (nameEl && nameEl.value.trim()) day.name = nameEl.value.trim();
+      if (subEl) day.subtitle = subEl.value.trim();
+      saveProgramme();
+      state.modal = null;
+      render();
+      showToast('Workout renamed');
+      break;
+    }
 
     case 'saveExercise':
       saveEditedExercise();
